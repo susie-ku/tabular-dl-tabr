@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Literal, Optional, Union
 
 import delu
-import faiss
-import faiss.contrib.torch_utils  # noqa  << this line makes faiss work with PyTorch
+# import faiss
+# import faiss.contrib.torch_utils  # noqa  << this line makes faiss work with PyTorch
 import numpy as np
 import torch
 import torch.nn as nn
@@ -30,6 +30,48 @@ from tqdm import tqdm
 
 import lib
 from lib import KWArgs
+
+import torch
+
+class TorchIndexFlatL2(torch.nn.Module):
+    def __init__(self, d):
+        super(TorchIndexFlatL2, self).__init__()
+        self.d = d
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.database = None
+
+    def reset(self):
+        self.database = None
+
+    def add(self, x):
+        if self.database is None:
+            # self.database = x.clone().detach().to(self.device)
+            self.database = x.clone().to(self.device)
+        else:
+            # self.database = torch.cat((self.database, x.clone().detach().to(self.device)), dim=0)
+            self.database = torch.cat((self.database, x.clone().to(self.device)), dim=0)
+
+    def search(self, x, k):
+        if self.database is None:
+            raise RuntimeError("No database vectors added. Call 'add' first.")
+
+        x = x.to(self.device)
+
+        batch_size, _ = x.shape
+        distances = torch.zeros(batch_size, k)
+        indices = torch.zeros(batch_size, k, dtype=torch.long)
+
+        for i in range(batch_size):
+            query = x[i, :].view(1, -1)
+            query = query.repeat(self.database.shape[0], 1)
+            dist = torch.sum((query - self.database)**2, dim=1)
+
+            sorted_dist, sorted_indices = torch.sort(dist)
+            distances[i, :] = sorted_dist[:k]
+            indices[i, :] = sorted_indices[:k]
+
+        return distances.to(self.device), indices.to(self.device)
+
 
 
 @dataclass(frozen=True)
@@ -250,18 +292,21 @@ class Model(nn.Module):
         # For smaller datasets, however, the naive solution can actually be faster.
         batch_size, d_main = k.shape
         device = k.device
-        with torch.no_grad():
+        with torch.enable_grad():
+
+            # distances, context_idx = torch.topk(
+            #     pairwise_l2_distance(k, candidate_k),
+            #     k=context_size,
+            #     # dim=?
+            # )
+
             if self.search_index is None:
-                self.search_index = (
-                    faiss.GpuIndexFlatL2(faiss.StandardGpuResources(), d_main)
-                    if device.type == 'cuda'
-                    else faiss.IndexFlatL2(d_main)
-                )
+                self.search_index = TorchIndexFlatL2(d_main)
             # Updating the index is much faster than creating a new one.
             self.search_index.reset()
             self.search_index.add(candidate_k)  # type: ignore[code]
-            distances: Tensor
-            context_idx: Tensor
+            # distances: Tensor
+            # context_idx: Tensor
             distances, context_idx = self.search_index.search(  # type: ignore[code]
                 k, context_size + (1 if is_train else 0)
             )

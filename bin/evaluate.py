@@ -19,7 +19,7 @@ import lib
 
 def main(
     path: Path,
-    n_seeds: int = 15,
+    n_seeds: int = 1,
     function: Optional[str] = None,
     *,
     force: bool = False,
